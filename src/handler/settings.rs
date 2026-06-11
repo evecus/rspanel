@@ -1,4 +1,3 @@
-use crate::collector::cache::{invalidate_docker_cache, invalidate_systemd_cache};
 use crate::config::{self, PanelSettings};
 use axum::{http::StatusCode, Json};
 use std::sync::Arc;
@@ -10,13 +9,6 @@ pub async fn get_settings() -> Json<serde_json::Value> {
 pub async fn update_settings(
     Json(new_settings): Json<PanelSettings>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    {
-        let old = config::get_settings();
-            invalidate_systemd_cache();
-        }
-            invalidate_docker_cache();
-        }
-    }
     *config::SETTINGS.write().unwrap() = Some(Arc::new(new_settings));
     config::save_settings().map_err(|_| {
         (

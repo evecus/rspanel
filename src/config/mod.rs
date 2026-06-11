@@ -184,7 +184,6 @@ pub struct PanelSettings {
     pub network_mode: String,
     #[serde(default)]
     pub show_app_name: bool,
-    #[serde(default)]
 }
 
 pub fn init(base: &str) -> Result<()> {
