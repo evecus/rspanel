@@ -215,19 +215,6 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/users", get(handler::auth::list_users))
         .route("/api/users", post(handler::auth::create_user))
         .route("/api/users/:username", delete(handler::auth::delete_user))
-        )
-        )
-        )
-        )
-        )
-        )
-        )
-        )
-        )
-        )
-        )
-        )
-        )
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,
