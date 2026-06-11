@@ -1,0 +1,158 @@
+name: build
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '发布版本号 (例如 v1.0.1)，留空则只上传 Artifact 不发布'
+        required: false
+        default: ''
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            artifact: rspanel-linux-amd64
+          - target: aarch64-unknown-linux-musl
+            artifact: rspanel-linux-arm64
+
+    steps:
+      # 1. 拉取代码
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 2. 安装 Node.js，构建 Vue 前端
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Build Frontend
+        run: |
+          cd frontend
+          npm install
+          npm run build
+
+      # 3. 安装 Rust 工具链
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross-compilation tools
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y musl-tools
+          # For aarch64 cross-compilation
+          if [ "${{ matrix.target }}" = "aarch64-unknown-linux-musl" ]; then
+            sudo apt-get install -y gcc-aarch64-linux-gnu
+          fi
+
+      # 4. 确定版本号
+      - name: Set version
+        id: ver
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.version }}" ]; then
+            echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event_name }}" = "push" ]; then
+            echo "version=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=dev" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Inject version into Cargo.toml
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          sed -i "s/^version = .*/version = \"${VERSION#v}\"/" Cargo.toml
+
+      # 5. 编译 Rust 后端（静态链接，单文件，嵌入前端）
+      - name: Build Backend
+        env:
+          APP_VERSION: ${{ steps.ver.outputs.version }}
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: aarch64-linux-gnu-gcc
+        run: |
+          cargo build --release --target ${{ matrix.target }}
+          cp target/${{ matrix.target }}/release/rspanel ${{ matrix.artifact }}
+
+      # 6. 始终上传 Artifact
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+
+  # 7. 有版本号时：清理 Pre-release、发布正式 Release、推送 Docker 镜像
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.version != '')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set version
+        id: ver
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          fi
+
+      # 删除所有 pre-release
+      - name: Delete all pre-releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release list --json tagName,isPrerelease \
+            | jq -r '.[] | select(.isPrerelease == true) | .tagName' \
+            | while read tag; do
+                echo "Deleting pre-release: $tag"
+                gh release delete "$tag" --yes --cleanup-tag
+              done
+
+      # 下载所有平台的二进制
+      - name: Download All Artifacts
+        uses: actions/download-artifact@v4
+
+      # 发布正式 GitHub Release
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.version }}
+          name: rspanel ${{ steps.ver.outputs.version }}
+          prerelease: false
+          files: |
+            rspanel-linux-amd64/rspanel-linux-amd64
+            rspanel-linux-arm64/rspanel-linux-arm64
+
+      # 构建并推送 Docker 镜像
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Copy binaries for Docker
+        run: |
+          cp rspanel-linux-amd64/rspanel-linux-amd64 rspanel-linux-amd64-bin
+          cp rspanel-linux-arm64/rspanel-linux-arm64 rspanel-linux-arm64-bin
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Build & Push Docker image (multi-arch)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/rspanel:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/rspanel:${{ steps.ver.outputs.version }}
