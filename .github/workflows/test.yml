@@ -61,7 +61,7 @@ jobs:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: aarch64-linux-gnu-gcc
         run: |
           cargo build --release --target ${{ matrix.target }}
-          cp target/${{ matrix.target }}/release/easypanel ${{ matrix.artifact }}
+          cp target/${{ matrix.target }}/release/rspanel ${{ matrix.artifact }}
 
       # 4. 始终上传 Artifact
       - name: Upload Artifact
